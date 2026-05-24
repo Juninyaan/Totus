@@ -22,7 +22,7 @@ router
   .get(listShops)
   .post(
     authenticate,
-    authorizeRoles("user", "shop", "admin"),
+    authorizeRoles("user", "shop", "gym_owner", "admin"),
     validateRequest({
       body: {
         shopName: { required: true, type: "string", minLength: 2 },
@@ -48,7 +48,7 @@ router
   )
   .patch(
     authenticate,
-    authorizeRoles("shop", "admin", "user"),
+    authorizeRoles("shop", "gym_owner", "admin", "user"),
     validateRequest({
       params: {
         id: { required: true, type: "objectId" },
@@ -70,7 +70,7 @@ router
   )
   .delete(
     authenticate,
-    authorizeRoles("shop", "admin", "user"),
+    authorizeRoles("shop", "gym_owner", "admin", "user"),
     validateRequest({
       params: {
         id: { required: true, type: "objectId" },
@@ -91,7 +91,7 @@ router
   )
   .post(
     authenticate,
-    authorizeRoles("shop", "admin"),
+    authorizeRoles("shop", "gym_owner", "admin"),
     validateRequest({
       params: {
         id: { required: true, type: "objectId" },
@@ -108,7 +108,7 @@ router
   .route("/:id/products/:productId")
   .patch(
     authenticate,
-    authorizeRoles("shop", "admin"),
+    authorizeRoles("shop", "gym_owner", "admin"),
     validateRequest({
       params: {
         id: { required: true, type: "objectId" },
@@ -128,7 +128,7 @@ router
   )
   .delete(
     authenticate,
-    authorizeRoles("shop", "admin"),
+    authorizeRoles("shop", "gym_owner", "admin"),
     validateRequest({
       params: {
         id: { required: true, type: "objectId" },

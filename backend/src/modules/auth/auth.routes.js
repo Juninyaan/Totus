@@ -14,6 +14,8 @@ router.post(
       email: { required: true, type: "email" },
       password: { required: true, type: "string", minLength: 8 },
       phone: { type: "string" },
+      role: { type: "string", enum: ["member", "trainer", "gym_owner"] },
+      shopName: { type: "string", minLength: 2 },
     },
   }),
   register

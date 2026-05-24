@@ -1,6 +1,8 @@
 const bcrypt = require("bcryptjs");
 
 const User = require("../../models/User");
+const Trainer = require("../../models/Trainer");
+const Shop = require("../../models/Shop");
 const { asyncHandler } = require("../../utils/asyncHandler");
 const { createToken } = require("../../utils/createToken");
 const { httpError } = require("../../utils/httpError");
@@ -10,8 +12,20 @@ const sanitizeAuthResponse = (user) => ({
   user,
 });
 
+const resolveRolesForRegistration = (role) => {
+  if (role === "trainer") {
+    return ["user", "member", "trainer"];
+  }
+
+  if (role === "gym_owner") {
+    return ["user", "member", "shop", "gym_owner"];
+  }
+
+  return ["user", "member"];
+};
+
 const register = asyncHandler(async (req, res) => {
-  const { name, email, password, phone } = req.body;
+  const { name, email, password, phone, role, shopName } = req.body;
 
   const existingUser = await User.findOne({ email: email.toLowerCase() });
   if (existingUser) {
@@ -24,8 +38,30 @@ const register = asyncHandler(async (req, res) => {
     email,
     passwordHash,
     phone,
-    roles: ["user"],
+    roles: resolveRolesForRegistration(role),
   });
+
+  if (role === "trainer") {
+    await Trainer.create({
+      userId: user._id,
+      specialties: [],
+      availability: [],
+      experienceYears: 0,
+      bio: "",
+      isActive: true,
+    });
+  }
+
+  if (role === "gym_owner") {
+    await Shop.create({
+      shopName: shopName?.trim() || `${name.trim()}'s Gym`,
+      ownerId: user._id,
+      categories: ["gym"],
+      description: "",
+      location: "",
+      isVerified: false,
+    });
+  }
 
   res.status(201).json(sanitizeAuthResponse(user));
 });

@@ -80,6 +80,13 @@ const serviceSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Trainer",
     },
+    assignedTrainerIds: {
+      type: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Trainer",
+      }],
+      default: [],
+    },
     shopId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Shop",
@@ -98,6 +105,34 @@ const serviceSchema = new mongoose.Schema(
       default: 1,
       min: 1,
     },
+    groupProgramMeta: {
+      nextClassDate: {
+        type: Date,
+      },
+      nextClassStartTime: {
+        type: String,
+        trim: true,
+      },
+      nextClassEndTime: {
+        type: String,
+        trim: true,
+      },
+      bringNote: {
+        type: String,
+        trim: true,
+      },
+      eventDayTitle: {
+        type: String,
+        trim: true,
+      },
+      eventDayDate: {
+        type: Date,
+      },
+      eventDayNote: {
+        type: String,
+        trim: true,
+      },
+    },
     isActive: {
       type: Boolean,
       default: true,
@@ -108,6 +143,7 @@ const serviceSchema = new mongoose.Schema(
 
 serviceSchema.index({ category: 1, type: 1, isActive: 1 });
 serviceSchema.index({ trainerId: 1 });
+serviceSchema.index({ assignedTrainerIds: 1 });
 serviceSchema.index({ shopId: 1 });
 
 module.exports = mongoose.model("Service", serviceSchema);

@@ -12,7 +12,7 @@ router
 	.get(listServices)
 	.post(
 		authenticate,
-		authorizeRoles("trainer", "shop", "admin"),
+		authorizeRoles("trainer", "shop", "gym_owner", "admin"),
 		validateRequest({
 			body: {
 				category: { required: true, type: "string", minLength: 2 },
@@ -21,7 +21,9 @@ router
 				audience: { type: "string", enum: ["all", "ladies"] },
 				price: { required: true, type: "number", min: 0 },
 				trainerId: { type: "objectId" },
+				assignedTrainerIds: { type: "array" },
 				shopId: { type: "objectId" },
+				groupProgramMeta: { type: "object" },
 			},
 		}),
 		createService
@@ -41,7 +43,7 @@ router
 	.route("/:id")
 	.patch(
 		authenticate,
-		authorizeRoles("trainer", "shop", "admin"),
+		authorizeRoles("trainer", "shop", "gym_owner", "admin"),
 		validateRequest({
 			params: {
 				id: { required: true, type: "objectId" },
@@ -55,10 +57,12 @@ router
 				price: { type: "number", min: 0 },
 				currency: { type: "string", minLength: 3 },
 				trainerId: { type: "objectId" },
+				assignedTrainerIds: { type: "array" },
 				shopId: { type: "objectId" },
 				location: { type: "object" },
 				schedule: { type: "array" },
 				capacity: { type: "number", min: 1 },
+				groupProgramMeta: { type: "object" },
 				isActive: { type: "boolean" },
 			},
 		}),
@@ -66,7 +70,7 @@ router
 	)
 	.delete(
 		authenticate,
-		authorizeRoles("trainer", "shop", "admin"),
+		authorizeRoles("trainer", "shop", "gym_owner", "admin"),
 		validateRequest({
 			params: {
 				id: { required: true, type: "objectId" },

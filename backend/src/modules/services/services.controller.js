@@ -12,12 +12,47 @@ const servicePopulate = {
   populate: { path: "userId", select: "name email phone profileImage" },
 };
 
+const assignedTrainerPopulate = {
+  path: "assignedTrainerIds",
+  populate: { path: "userId", select: "name email phone profileImage" },
+};
+
 const shopPopulate = {
   path: "shopId",
   select: "shopName location description logoUrl isVerified websiteLink peakHoursBusy peakHoursQuiet peakHoursNotes categories",
 };
 
-const populateServiceQuery = (query) => query.populate(servicePopulate).populate(shopPopulate);
+const populateServiceQuery = (query) => query.populate(servicePopulate).populate(assignedTrainerPopulate).populate(shopPopulate);
+
+const resolveAssignedTrainerIds = async (req, assignedTrainerIds, fallbackTrainerId, linkedShopId) => {
+  if (assignedTrainerIds === undefined) {
+    return fallbackTrainerId ? [fallbackTrainerId] : [];
+  }
+
+  if (!Array.isArray(assignedTrainerIds)) {
+    throw httpError(400, "assignedTrainerIds must be an array of trainer ids");
+  }
+
+  if (assignedTrainerIds.length === 0) {
+    return [];
+  }
+
+  const uniqueIds = [...new Set(assignedTrainerIds.map((id) => id?.toString()).filter(Boolean))];
+  const trainers = await Trainer.find({ _id: { $in: uniqueIds } }).select("_id userId");
+
+  if (trainers.length !== uniqueIds.length) {
+    throw httpError(404, "One or more assigned trainers were not found");
+  }
+
+  if (!isAdmin(req) && !linkedShopId) {
+    const includesOtherTrainer = trainers.some((trainer) => trainer.userId.toString() !== req.auth.userId);
+    if (includesOtherTrainer) {
+      throw httpError(403, "Only gym owners or admins can assign additional trainers to a service");
+    }
+  }
+
+  return uniqueIds;
+};
 
 const getOwnedService = async (req, serviceId) => {
   const service = await Service.findById(serviceId)
@@ -39,7 +74,7 @@ const getOwnedService = async (req, serviceId) => {
 };
 
 const createService = asyncHandler(async (req, res) => {
-  const { category, type, title, description, audience, price, currency, trainerId, shopId, location, schedule, deliveryOptions, capacity, isActive } = req.body;
+  const { category, type, title, description, audience, price, currency, trainerId, assignedTrainerIds, shopId, location, schedule, deliveryOptions, capacity, groupProgramMeta, isActive } = req.body;
 
   if (!category || !type || !title || price === undefined || (!trainerId && !shopId)) {
     throw httpError(400, "category, type, title, price, and either trainerId or shopId are required");
@@ -73,6 +108,8 @@ const createService = asyncHandler(async (req, res) => {
     linkedShopId = shop._id;
   }
 
+  const resolvedAssignedTrainerIds = await resolveAssignedTrainerIds(req, assignedTrainerIds, resolvedTrainerId, linkedShopId);
+
   const service = await Service.create({
     category,
     type,
@@ -82,11 +119,13 @@ const createService = asyncHandler(async (req, res) => {
     price,
     currency,
     trainerId: resolvedTrainerId,
+    assignedTrainerIds: resolvedAssignedTrainerIds,
     shopId: linkedShopId,
     location,
     schedule,
     deliveryOptions,
     capacity,
+    groupProgramMeta,
     isActive: isAdmin(req) ? isActive : true,
   });
 
@@ -139,7 +178,7 @@ const getServiceById = asyncHandler(async (req, res) => {
 
 const updateService = asyncHandler(async (req, res) => {
   const service = await getOwnedService(req, req.params.id);
-  const { category, type, title, description, audience, price, currency, trainerId, shopId, location, schedule, deliveryOptions, capacity, isActive } = req.body;
+  const { category, type, title, description, audience, price, currency, trainerId, assignedTrainerIds, shopId, location, schedule, deliveryOptions, capacity, groupProgramMeta, isActive } = req.body;
 
   if (Object.keys(req.body).length === 0) {
     throw httpError(400, "At least one service field is required");
@@ -179,6 +218,15 @@ const updateService = asyncHandler(async (req, res) => {
     }
   }
 
+  if (assignedTrainerIds !== undefined) {
+    service.assignedTrainerIds = await resolveAssignedTrainerIds(
+      req,
+      assignedTrainerIds,
+      service.trainerId?._id?.toString(),
+      service.shopId?._id?.toString()
+    );
+  }
+
   if (!service.trainerId && !service.shopId) {
     throw httpError(400, "A service must stay attached to either a trainer or a shop");
   }
@@ -194,6 +242,7 @@ const updateService = asyncHandler(async (req, res) => {
   if (schedule !== undefined) service.schedule = schedule;
   if (deliveryOptions !== undefined) service.deliveryOptions = deliveryOptions;
   if (capacity !== undefined) service.capacity = capacity;
+  if (groupProgramMeta !== undefined) service.groupProgramMeta = groupProgramMeta;
   if (isActive !== undefined) service.isActive = isAdmin(req) ? isActive : Boolean(isActive);
 
   await service.save();

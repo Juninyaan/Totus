@@ -112,7 +112,7 @@ const bookingSchema = new mongoose.Schema(
     },
     rescheduleRequestedBy: {
       type: String,
-      enum: ["user", "trainer", "shop", "admin"],
+      enum: ["user", "member", "trainer", "shop", "gym_owner", "admin"],
     },
     rescheduleReason: {
       type: String,

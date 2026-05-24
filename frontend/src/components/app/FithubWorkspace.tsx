@@ -81,6 +81,7 @@ type Service = {
   schedule?: ServiceScheduleSlot[];
   deliveryOptions?: ServiceDeliveryOption[];
   capacity?: number;
+  assignedTrainerIds?: Array<string | { _id?: string } | Trainer>;
 };
 
 type GroupFitnessTeam = {
@@ -110,6 +111,47 @@ type GroupFitnessProgram = {
   currency?: string;
   price?: number;
   linkedServiceId?: string;
+  assignedTrainerIds?: string[];
+  memberIds?: string[];
+  nextClass?: {
+    classDate?: string;
+    startTime?: string;
+    endTime?: string;
+    bringNote?: string;
+  };
+  eventDay?: {
+    title?: string;
+    eventDate?: string;
+    note?: string;
+  };
+  expectedHeadcount?: number;
+};
+
+type DirectoryUser = {
+  _id: string;
+  name: string;
+  email: string;
+  roles: string[];
+  isActive?: boolean;
+};
+
+type GroupProgramDashboard = {
+  totalMembers: number;
+  expectedHeadcount: number;
+  topAttendance?: { name?: string; rate?: number; attended?: number; total?: number } | null;
+  biggestLoser?: { name?: string; weightLossKg?: number } | null;
+};
+
+type GroupProgramManagerDetails = {
+  members: DirectoryUser[];
+  attendanceRows: Array<{
+    userId: string;
+    name: string;
+    classDate: string;
+    status: "attended" | "missed" | "excused";
+    note?: string;
+    markedAt?: string;
+  }>;
 };
 
 type Shop = {
@@ -328,6 +370,8 @@ type RegisterFormState = {
   name: string;
   email: string;
   password: string;
+  role: "member" | "trainer" | "gym_owner";
+  shopName: string;
   phone: string;
   dateOfBirth: string;
   emergencyContactName: string;
@@ -342,6 +386,8 @@ const emptyRegisterForm: RegisterFormState = {
   name: "",
   email: "",
   password: "",
+  role: "member",
+  shopName: "",
   phone: "",
   dateOfBirth: "",
   emergencyContactName: "",
@@ -702,6 +748,43 @@ export function FithubWorkspace({ section }: { section: Section }) {
   const [selectedShopId, setSelectedShopId] = useState<string | null>(null);
   const [selectedGroupTeamId, setSelectedGroupTeamId] = useState("");
   const [selectedGroupProgramId, setSelectedGroupProgramId] = useState<string | null>(null);
+  const [selectedManagedProgramId, setSelectedManagedProgramId] = useState<string | null>(null);
+  const [groupManagerDraft, setGroupManagerDraft] = useState({
+    classDate: "",
+    startTime: "19:00",
+    endTime: "20:00",
+    bringNote: "",
+    eventTitle: "",
+    eventDate: "",
+    eventNote: "",
+    assignedTrainerIds: [] as string[],
+  });
+  const [groupManagerDirectoryUsers, setGroupManagerDirectoryUsers] = useState<DirectoryUser[]>([]);
+  const [groupManagerDetailsByProgram, setGroupManagerDetailsByProgram] = useState<Record<string, GroupProgramManagerDetails>>({});
+  const [groupProgramCreateForm, setGroupProgramCreateForm] = useState({
+    teamId: "",
+    title: "",
+    subtitle: "",
+    description: "",
+    price: "",
+    venue: "",
+    coach: "",
+    coachTrainerId: "",
+    days: "Monday,Wednesday,Friday",
+    startTime: "19:00",
+    endTime: "20:00",
+    startDate: new Date(Date.now() + 86400000).toISOString().slice(0, 10),
+    endDate: new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10),
+    totalSlots: "20",
+  });
+  const [groupManagerMemberSearch, setGroupManagerMemberSearch] = useState("");
+  const [groupManagerMemberId, setGroupManagerMemberId] = useState("");
+  const [groupManagerAttendanceMemberId, setGroupManagerAttendanceMemberId] = useState("");
+  const [groupManagerAttendanceDate, setGroupManagerAttendanceDate] = useState(new Date().toISOString().slice(0, 10));
+  const [groupManagerAttendanceStatus, setGroupManagerAttendanceStatus] = useState<"attended" | "missed" | "excused">("attended");
+  const [groupManagerAttendanceNote, setGroupManagerAttendanceNote] = useState("");
+  const [groupManagerIntentDate, setGroupManagerIntentDate] = useState(new Date(Date.now() + 86400000).toISOString().slice(0, 10));
+  const [groupProgramDashboards, setGroupProgramDashboards] = useState<Record<string, GroupProgramDashboard>>({});
   const [waitlistedProgramIds, setWaitlistedProgramIds] = useState<string[]>([]);
   const [savedItems, setSavedItems] = useState<SavedItem[]>([]);
   const [expandedDiscoverPanels, setExpandedDiscoverPanels] = useState<Record<DiscoverPanelKey, boolean>>({
@@ -734,7 +817,7 @@ export function FithubWorkspace({ section }: { section: Section }) {
   const [isQuickActionsOpen, setIsQuickActionsOpen] = useState(false);
   const [quickActionQuery, setQuickActionQuery] = useState("");
   const [dashboardLayout, setDashboardLayout] = useState<"stacked" | "side-by-side">("stacked");
-  const [homeRoleView, setHomeRoleView] = useState<"trainer" | "member">("member");
+  const [homeRoleView, setHomeRoleView] = useState<"trainer" | "shop" | "member">("member");
   const [ratingSummaries, setRatingSummaries] = useState<Record<string, RatingSummary>>({});
   const [ratingModal, setRatingModal] = useState<RatingModal | null>(null);
   const [ratingForm, setRatingForm] = useState({ score: 0, comment: "" });
@@ -1068,6 +1151,36 @@ export function FithubWorkspace({ section }: { section: Section }) {
     () => services.filter((service) => service.trainerId?._id === ownedTrainer?._id),
     [ownedTrainer?._id, services]
   );
+  const serviceById = useMemo(() => new Map(services.map((service) => [service._id, service])), [services]);
+  const manageableGroupPrograms = useMemo(() => groupPrograms.filter((program) => {
+    if (currentUser?.roles.includes("admin")) {
+      return true;
+    }
+
+    const linkedService = program.linkedServiceId ? serviceById.get(program.linkedServiceId) : undefined;
+    const trainerManaged = Boolean(ownedTrainer && (
+      (program.assignedTrainerIds ?? []).includes(ownedTrainer._id)
+      || linkedService?.trainerId?._id === ownedTrainer._id
+      || (linkedService?.assignedTrainerIds ?? []).some((trainer) => typeof trainer === "string" ? trainer === ownedTrainer._id : trainer?._id === ownedTrainer._id)
+    ));
+    const shopManaged = Boolean(ownedShop && linkedService?.shopId?._id === ownedShop._id);
+
+    return trainerManaged || shopManaged;
+  }), [currentUser?.roles, groupPrograms, ownedShop, ownedTrainer, serviceById]);
+  const selectedManagedProgram = useMemo(
+    () => manageableGroupPrograms.find((program) => program._id === selectedManagedProgramId) ?? null,
+    [manageableGroupPrograms, selectedManagedProgramId]
+  );
+  const directoryUsersById = useMemo(
+    () => new Map(groupManagerDirectoryUsers.map((user) => [user._id, user])),
+    [groupManagerDirectoryUsers]
+  );
+  const selectedManagedProgramMembers = useMemo(
+    () => (selectedManagedProgram?.memberIds ?? []).map((id) => directoryUsersById.get(id)).filter(Boolean) as DirectoryUser[],
+    [directoryUsersById, selectedManagedProgram?.memberIds]
+  );
+  const selectedManagedProgramDashboard = selectedManagedProgram ? groupProgramDashboards[selectedManagedProgram._id] : undefined;
+  const selectedManagedProgramDetails = selectedManagedProgram ? groupManagerDetailsByProgram[selectedManagedProgram._id] : undefined;
   useEffect(() => {
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target;
@@ -1103,13 +1216,16 @@ export function FithubWorkspace({ section }: { section: Section }) {
 
   const isAdmin = currentUser?.roles.includes("admin") ?? false;
   const hasTrainerAccess = Boolean(ownedTrainer || currentUser?.roles.includes("trainer"));
-  const hasShopAccess = Boolean(ownedShop || currentUser?.roles.includes("shop"));
+  const hasShopAccess = Boolean(ownedShop || currentUser?.roles.includes("shop") || currentUser?.roles.includes("gym_owner"));
   const showMemberTools = Boolean(currentUser);
   const showTrainerTools = Boolean(currentUser && (hasTrainerAccess || isAdmin));
   const showShopTools = Boolean(currentUser && (hasShopAccess || isAdmin));
-  const canToggleHomeRole = Boolean(currentUser && hasTrainerAccess && !isAdmin);
+  const canToggleHomeRole = Boolean(currentUser && (hasTrainerAccess || hasShopAccess) && !isAdmin);
   const homeShowsTrainerView = showTrainerTools && (!canToggleHomeRole || homeRoleView === "trainer");
-  const homeShowsMemberView = !isAdmin && showMemberTools && !showShopTools && (!showTrainerTools || (canToggleHomeRole && homeRoleView === "member"));
+  const homeShowsShopView = showShopTools && (!canToggleHomeRole || homeRoleView === "shop");
+  const homeShowsMemberView = !isAdmin && showMemberTools && (!canToggleHomeRole || homeRoleView === "member");
+  const canManageGroupFitnessInDiscover = Boolean(currentUser && (isAdmin || hasTrainerAccess || hasShopAccess));
+  const showGroupFitnessOperatorMode = canManageGroupFitnessInDiscover && homeRoleView !== "member";
   const defaultWorkspaceView: WorkspaceView = !currentUser
     ? "all"
     : showTrainerTools && !showShopTools && !isAdmin
@@ -1124,13 +1240,18 @@ export function FithubWorkspace({ section }: { section: Section }) {
           const currentUserEmail = currentUser?.email ?? "";
 
   useEffect(() => {
-    if (canToggleHomeRole) {
+    if (canToggleHomeRole && hasTrainerAccess) {
       setHomeRoleView("trainer");
       return;
     }
 
+    if (canToggleHomeRole && hasShopAccess) {
+      setHomeRoleView("shop");
+      return;
+    }
+
     setHomeRoleView("member");
-  }, [canToggleHomeRole, currentUser?._id]);
+  }, [canToggleHomeRole, currentUser?._id, hasShopAccess, hasTrainerAccess]);
   const homeMeta = currentUser
     ? {
         eyebrow: "Home",
@@ -1524,7 +1645,7 @@ export function FithubWorkspace({ section }: { section: Section }) {
     { title: "Venue tools", description: "Products, memberships, classes, and booking requests.", accent: "border-black/6 bg-background", visible: showShopTools, view: "shop" as WorkspaceView },
     { title: "Admin tools", description: "Moderation and platform-level controls.", accent: "border-black/6 bg-background", visible: isAdmin, view: "admin" as WorkspaceView },
   ];
-  const shouldShowOperatorWorkspace = section !== "home" || homeShowsTrainerView;
+  const shouldShowOperatorWorkspace = section !== "home" || homeShowsTrainerView || homeShowsShopView;
   const shouldShowMemberWorkspace = Boolean(currentUser) && !shouldShowOperatorWorkspace;
   const filteredWorkspacePanels = workspacePanels.filter((panel) => panel.visible && (activeWorkspaceView === "all" || activeWorkspaceView === panel.view));
   const workspaceViewOptions = [
@@ -1757,6 +1878,75 @@ export function FithubWorkspace({ section }: { section: Section }) {
   }, [refreshDiscovery]);
 
   useEffect(() => {
+    if (!currentUser || !(hasTrainerAccess || hasShopAccess || isAdmin)) {
+      setGroupManagerDirectoryUsers([]);
+      return;
+    }
+
+    void apiRequest<DirectoryUser[]>("/users", { token: sessionToken ?? undefined })
+      .then((data) => setGroupManagerDirectoryUsers(data))
+      .catch(() => setGroupManagerDirectoryUsers([]));
+  }, [currentUser, hasShopAccess, hasTrainerAccess, isAdmin, sessionToken]);
+
+  useEffect(() => {
+    if (!selectedManagedProgramId && manageableGroupPrograms[0]?._id) {
+      setSelectedManagedProgramId(manageableGroupPrograms[0]._id);
+      return;
+    }
+
+    if (selectedManagedProgramId && !manageableGroupPrograms.some((program) => program._id === selectedManagedProgramId)) {
+      setSelectedManagedProgramId(manageableGroupPrograms[0]?._id ?? null);
+    }
+  }, [manageableGroupPrograms, selectedManagedProgramId]);
+
+  useEffect(() => {
+    if (!selectedManagedProgram) {
+      return;
+    }
+
+    setGroupManagerDraft({
+      classDate: selectedManagedProgram.nextClass?.classDate ? toDateInputValue(selectedManagedProgram.nextClass.classDate) : "",
+      startTime: selectedManagedProgram.nextClass?.startTime ?? selectedManagedProgram.startTime ?? "19:00",
+      endTime: selectedManagedProgram.nextClass?.endTime ?? selectedManagedProgram.endTime ?? "20:00",
+      bringNote: selectedManagedProgram.nextClass?.bringNote ?? "",
+      eventTitle: selectedManagedProgram.eventDay?.title ?? "",
+      eventDate: selectedManagedProgram.eventDay?.eventDate ? toDateInputValue(selectedManagedProgram.eventDay.eventDate) : "",
+      eventNote: selectedManagedProgram.eventDay?.note ?? "",
+      assignedTrainerIds: selectedManagedProgram.assignedTrainerIds ?? [],
+    });
+    setGroupManagerMemberId("");
+    setGroupManagerAttendanceMemberId(selectedManagedProgram.memberIds?.[0] ?? "");
+    setGroupManagerAttendanceDate(new Date().toISOString().slice(0, 10));
+    setGroupManagerAttendanceStatus("attended");
+    setGroupManagerAttendanceNote("");
+    setGroupManagerIntentDate(new Date(Date.now() + 86400000).toISOString().slice(0, 10));
+  }, [selectedManagedProgram]);
+
+  useEffect(() => {
+    if (!groupProgramCreateForm.teamId && groupFitnessTeams[0]?._id) {
+      setGroupProgramCreateForm((current) => ({ ...current, teamId: groupFitnessTeams[0]._id }));
+    }
+  }, [groupFitnessTeams, groupProgramCreateForm.teamId]);
+
+  useEffect(() => {
+    if (groupProgramCreateForm.coachTrainerId) {
+      return;
+    }
+
+    const defaultCoachId = ownedTrainer?._id ?? trainers[0]?._id;
+    if (!defaultCoachId) {
+      return;
+    }
+
+    const defaultCoach = trainers.find((trainer) => trainer._id === defaultCoachId);
+    setGroupProgramCreateForm((current) => ({
+      ...current,
+      coachTrainerId: defaultCoachId,
+      coach: current.coach || defaultCoach?.userId?.name || defaultCoach?.userId?.email || "",
+    }));
+  }, [groupProgramCreateForm.coachTrainerId, ownedTrainer?._id, trainers]);
+
+  useEffect(() => {
     if (!sessionToken) {
       return;
     }
@@ -1956,6 +2146,8 @@ export function FithubWorkspace({ section }: { section: Section }) {
     const name = registerForm.name.trim();
     const email = registerForm.email.trim().toLowerCase();
     const password = registerForm.password;
+    const role = registerForm.role;
+    const shopName = registerForm.shopName.trim();
     const phone = registerForm.phone.trim();
     const dateOfBirth = registerForm.dateOfBirth;
     const emergencyContactName = registerForm.emergencyContactName.trim();
@@ -1993,10 +2185,16 @@ export function FithubWorkspace({ section }: { section: Section }) {
       throw new Error("Complete the medical form before creating an account. Use 'None' where needed.");
     }
 
+    if (role === "gym_owner" && shopName.length < 2) {
+      throw new Error("Gym owner signup needs a gym name.");
+    }
+
     return {
       name,
       email,
       password,
+      role,
+      ...(role === "gym_owner" ? { shopName } : {}),
       dateOfBirth,
       emergencyContactName,
       emergencyContactPhone,
@@ -2574,6 +2772,11 @@ export function FithubWorkspace({ section }: { section: Section }) {
       return;
     }
 
+    if (showGroupFitnessOperatorMode) {
+      setError("You are in trainer/gym-owner mode. Switch to member view to activate this program as a participant.");
+      return;
+    }
+
     runAction(async () => {
       await apiRequest(`/group-fitness/programs/${selectedGroupProgram._id}/activate`, {
         method: "POST",
@@ -2608,6 +2811,11 @@ export function FithubWorkspace({ section }: { section: Section }) {
       return;
     }
 
+    if (showGroupFitnessOperatorMode) {
+      setError("You are in trainer/gym-owner mode. Switch to member view to join waitlist as a participant.");
+      return;
+    }
+
     runAction(async () => {
       await apiRequest(`/group-fitness/programs/${selectedGroupProgram._id}/waitlist`, {
         method: "POST",
@@ -2616,6 +2824,222 @@ export function FithubWorkspace({ section }: { section: Section }) {
       setWaitlistedProgramIds((current) => (current.includes(selectedGroupProgram._id) ? current : [...current, selectedGroupProgram._id]));
       await refreshDiscovery();
       setFeedback(`You are on the waitlist for the next ${selectedGroupProgram.title} cohort.`);
+    });
+  };
+
+  const handleSaveManagedProgramPlan = () => {
+    if (!selectedManagedProgram || !sessionToken) {
+      setError("Select a program first.");
+      return;
+    }
+
+    runAction(async () => {
+      await apiRequest(`/group-fitness/programs/${selectedManagedProgram._id}/plan`, {
+        method: "PATCH",
+        token: sessionToken,
+        body: {
+          assignedTrainerIds: groupManagerDraft.assignedTrainerIds,
+          nextClass: {
+            classDate: groupManagerDraft.classDate ? new Date(groupManagerDraft.classDate).toISOString() : undefined,
+            startTime: groupManagerDraft.startTime,
+            endTime: groupManagerDraft.endTime,
+            bringNote: groupManagerDraft.bringNote,
+          },
+          eventDay: {
+            title: groupManagerDraft.eventTitle,
+            eventDate: groupManagerDraft.eventDate ? new Date(groupManagerDraft.eventDate).toISOString() : undefined,
+            note: groupManagerDraft.eventNote,
+          },
+        },
+      });
+
+      await refreshDiscovery();
+      setFeedback("Group program plan updated.");
+    });
+  };
+
+  const handleAddManagedProgramMember = () => {
+    if (!selectedManagedProgram || !sessionToken || !groupManagerMemberId) {
+      setError("Choose a member first.");
+      return;
+    }
+
+    runAction(async () => {
+      await apiRequest(`/group-fitness/programs/${selectedManagedProgram._id}/members`, {
+        method: "POST",
+        token: sessionToken,
+        body: { userId: groupManagerMemberId },
+      });
+
+      setGroupManagerMemberId("");
+      await Promise.all([refreshDiscovery(), selectedManagedProgramDashboard ? apiRequest<GroupProgramDashboard>(`/group-fitness/programs/${selectedManagedProgram._id}/dashboard`, { token: sessionToken }).then((data) => setGroupProgramDashboards((current) => ({ ...current, [selectedManagedProgram._id]: data }))).catch(() => undefined) : Promise.resolve()]);
+      setFeedback("Member added to program.");
+    });
+  };
+
+  const handleRemoveManagedProgramMember = (userId: string) => {
+    if (!selectedManagedProgram || !sessionToken) {
+      setError("Select a program first.");
+      return;
+    }
+
+    runAction(async () => {
+      await apiRequest(`/group-fitness/programs/${selectedManagedProgram._id}/members/${userId}`, {
+        method: "DELETE",
+        token: sessionToken,
+      });
+
+      await refreshDiscovery();
+      setFeedback("Member removed from program.");
+    });
+  };
+
+  const handleSubmitManagedAttendance = () => {
+    if (!selectedManagedProgram || !sessionToken || !groupManagerAttendanceMemberId || !groupManagerAttendanceDate) {
+      setError("Select member, date, and status before submitting attendance.");
+      return;
+    }
+
+    runAction(async () => {
+      await apiRequest(`/group-fitness/programs/${selectedManagedProgram._id}/attendance`, {
+        method: "POST",
+        token: sessionToken,
+        body: {
+          classDate: groupManagerAttendanceDate,
+          entries: [
+            {
+              userId: groupManagerAttendanceMemberId,
+              status: groupManagerAttendanceStatus,
+              note: groupManagerAttendanceNote.trim() || undefined,
+            },
+          ],
+        },
+      });
+
+      setGroupManagerAttendanceNote("");
+      await refreshDiscovery();
+      setFeedback("Attendance saved.");
+    });
+  };
+
+  const handleRefreshManagedProgramDashboard = () => {
+    if (!selectedManagedProgram || !sessionToken) {
+      setError("Select a program first.");
+      return;
+    }
+
+    runAction(async () => {
+      const data = await apiRequest<GroupProgramDashboard>(`/group-fitness/programs/${selectedManagedProgram._id}/dashboard`, {
+        token: sessionToken,
+      });
+
+      setGroupProgramDashboards((current) => ({
+        ...current,
+        [selectedManagedProgram._id]: data,
+      }));
+      setFeedback("Program dashboard refreshed.");
+    });
+  };
+
+  const handleRefreshManagedProgramDetails = () => {
+    if (!selectedManagedProgram || !sessionToken) {
+      setError("Select a program first.");
+      return;
+    }
+
+    runAction(async () => {
+      const details = await apiRequest<GroupProgramManagerDetails>(`/group-fitness/programs/${selectedManagedProgram._id}/manager`, {
+        token: sessionToken,
+      });
+
+      setGroupManagerDetailsByProgram((current) => ({
+        ...current,
+        [selectedManagedProgram._id]: details,
+      }));
+      setFeedback("Program roster and attendance history refreshed.");
+    });
+  };
+
+  const handleRefreshExpectedHeadcount = () => {
+    if (!selectedManagedProgram || !sessionToken || !groupManagerIntentDate) {
+      setError("Select a program and date first.");
+      return;
+    }
+
+    runAction(async () => {
+      await apiRequest<GroupProgramDashboard>(`/group-fitness/programs/${selectedManagedProgram._id}/dashboard`, { token: sessionToken })
+        .then((data) => setGroupProgramDashboards((current) => ({ ...current, [selectedManagedProgram._id]: data })));
+      setFeedback("Expected headcount refreshed from latest intentions.");
+    });
+  };
+
+  const handleCreateGroupProgram = () => {
+    if (!sessionToken) {
+      setError("Login to create group programs.");
+      return;
+    }
+
+    const price = Number(groupProgramCreateForm.price);
+    const totalSlots = Number(groupProgramCreateForm.totalSlots);
+    const days = groupProgramCreateForm.days.split(",").map((day) => day.trim()).filter(Boolean);
+
+    if (!groupProgramCreateForm.teamId || !groupProgramCreateForm.title.trim() || !groupProgramCreateForm.subtitle.trim() || !groupProgramCreateForm.description.trim()) {
+      setError("Team, title, subtitle, and description are required.");
+      return;
+    }
+
+    if (!Number.isFinite(price) || price < 0 || !Number.isFinite(totalSlots) || totalSlots < 1) {
+      setError("Price and total slots must be valid numbers.");
+      return;
+    }
+
+    if (days.length === 0) {
+      setError("Provide at least one class day.");
+      return;
+    }
+
+    const selectedCoach = trainers.find((trainer) => trainer._id === groupProgramCreateForm.coachTrainerId);
+    const coachName = (selectedCoach?.userId?.name ?? selectedCoach?.userId?.email ?? groupProgramCreateForm.coach.trim()) || currentUser?.name || "Coach";
+    const assignedTrainerIds = selectedCoach
+      ? [selectedCoach._id]
+      : ownedTrainer
+        ? [ownedTrainer._id]
+        : [];
+
+    runAction(async () => {
+      await apiRequest("/group-fitness/programs", {
+        method: "POST",
+        token: sessionToken,
+        body: {
+          teamId: groupProgramCreateForm.teamId,
+          title: groupProgramCreateForm.title.trim(),
+          subtitle: groupProgramCreateForm.subtitle.trim(),
+          description: groupProgramCreateForm.description.trim(),
+          price,
+          currency: "MVR",
+          venue: groupProgramCreateForm.venue.trim() || ownedShop?.shopName || "Group fitness venue",
+          coach: coachName,
+          days,
+          startTime: groupProgramCreateForm.startTime,
+          endTime: groupProgramCreateForm.endTime,
+          startDate: groupProgramCreateForm.startDate,
+          endDate: groupProgramCreateForm.endDate,
+          totalSlots,
+          ...(selectedManagedProgram?.linkedServiceId ? { linkedServiceId: selectedManagedProgram.linkedServiceId } : {}),
+          assignedTrainerIds,
+        },
+      });
+
+      await refreshDiscovery();
+      setGroupProgramCreateForm((current) => ({
+        ...current,
+        title: "",
+        subtitle: "",
+        description: "",
+        price: "",
+        venue: "",
+      }));
+      setFeedback("Group fitness program created.");
     });
   };
 
@@ -3623,13 +4047,20 @@ export function FithubWorkspace({ section }: { section: Section }) {
               <div className="flex items-center justify-between gap-3 rounded-xl border border-black/8 bg-white/80 px-3 py-3">
                 <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">Home perspective</p>
                 <div className="flex gap-2">
-                  <button
+                  {hasTrainerAccess ? <button
                     className={`rounded-full border px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.12em] ${homeRoleView === "trainer" ? "border-accent bg-accent text-accent-deep" : "border-black/10 bg-white text-accent-deep"}`}
                     onClick={() => setHomeRoleView("trainer")}
                     type="button"
                   >
                     Trainer view
-                  </button>
+                  </button> : null}
+                  {hasShopAccess ? <button
+                    className={`rounded-full border px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.12em] ${homeRoleView === "shop" ? "border-accent bg-accent text-accent-deep" : "border-black/10 bg-white text-accent-deep"}`}
+                    onClick={() => setHomeRoleView("shop")}
+                    type="button"
+                  >
+                    Gym owner view
+                  </button> : null}
                   <button
                     className={`rounded-full border px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.12em] ${homeRoleView === "member" ? "border-accent bg-accent text-accent-deep" : "border-black/10 bg-white text-accent-deep"}`}
                     onClick={() => setHomeRoleView("member")}
@@ -4244,6 +4675,192 @@ export function FithubWorkspace({ section }: { section: Section }) {
     </div>
   );
 
+  const groupProgramManagementCard = shouldShowOperatorWorkspace ? (
+    <div className="rounded-[1.5rem] border border-black/8 bg-background p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="font-semibold text-accent-deep">Group program manager</p>
+          <p className="mt-1 text-sm text-muted">Program editor, member roster, attendance, and mini dashboard from one panel.</p>
+        </div>
+        <p className="text-xs uppercase tracking-[0.16em] text-muted">{manageableGroupPrograms.length} managed</p>
+      </div>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
+        <div className="grid gap-3">
+          <div className="rounded-2xl border border-black/8 bg-white px-4 py-4">
+            <p className="text-xs uppercase tracking-[0.16em] text-muted">Create program</p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <select className="rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm outline-none" value={groupProgramCreateForm.teamId} onChange={(event) => setGroupProgramCreateForm((current) => ({ ...current, teamId: event.target.value }))}>
+                <option value="">Select team</option>
+                {groupFitnessTeams.map((team) => <option key={team._id} value={team._id}>{team.name}</option>)}
+              </select>
+              <input className={formFieldClass} placeholder="Title" value={groupProgramCreateForm.title} onChange={(event) => setGroupProgramCreateForm((current) => ({ ...current, title: event.target.value }))} />
+              <input className={formFieldClass} placeholder="Subtitle" value={groupProgramCreateForm.subtitle} onChange={(event) => setGroupProgramCreateForm((current) => ({ ...current, subtitle: event.target.value }))} />
+              <input className={formFieldClass} placeholder="Price" value={groupProgramCreateForm.price} onChange={(event) => setGroupProgramCreateForm((current) => ({ ...current, price: event.target.value }))} />
+              <input className={formFieldClass} placeholder="Venue" value={groupProgramCreateForm.venue} onChange={(event) => setGroupProgramCreateForm((current) => ({ ...current, venue: event.target.value }))} />
+              <select className="rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm outline-none" value={groupProgramCreateForm.coachTrainerId} onChange={(event) => {
+                const coachTrainerId = event.target.value;
+                const trainer = trainers.find((item) => item._id === coachTrainerId);
+                setGroupProgramCreateForm((current) => ({
+                  ...current,
+                  coachTrainerId,
+                  coach: trainer?.userId?.name || trainer?.userId?.email || current.coach,
+                }));
+              }}>
+                <option value="">Select available coach</option>
+                {trainers.map((trainer) => <option key={trainer._id} value={trainer._id}>{trainer.userId?.name ?? trainer.userId?.email ?? "Coach"}</option>)}
+              </select>
+              <input className={formFieldClass} placeholder="Days e.g. Mon,Wed,Fri" value={groupProgramCreateForm.days} onChange={(event) => setGroupProgramCreateForm((current) => ({ ...current, days: event.target.value }))} />
+              <input className={formFieldClass} type="number" min={1} placeholder="Total slots" value={groupProgramCreateForm.totalSlots} onChange={(event) => setGroupProgramCreateForm((current) => ({ ...current, totalSlots: event.target.value }))} />
+              <input className={formFieldClass} type="date" value={groupProgramCreateForm.startDate} onChange={(event) => setGroupProgramCreateForm((current) => ({ ...current, startDate: event.target.value }))} />
+              <input className={formFieldClass} type="date" value={groupProgramCreateForm.endDate} onChange={(event) => setGroupProgramCreateForm((current) => ({ ...current, endDate: event.target.value }))} />
+              <input className={formFieldClass} type="time" value={groupProgramCreateForm.startTime} onChange={(event) => setGroupProgramCreateForm((current) => ({ ...current, startTime: event.target.value }))} />
+              <input className={formFieldClass} type="time" value={groupProgramCreateForm.endTime} onChange={(event) => setGroupProgramCreateForm((current) => ({ ...current, endTime: event.target.value }))} />
+            </div>
+            <textarea className="mt-3 min-h-20 rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm outline-none" placeholder="Description" value={groupProgramCreateForm.description} onChange={(event) => setGroupProgramCreateForm((current) => ({ ...current, description: event.target.value }))} />
+            <div className="mt-3"><button className={secondaryButtonClass} onClick={handleCreateGroupProgram} type="button">Create program</button></div>
+          </div>
+
+          <p className="text-xs uppercase tracking-[0.16em] text-muted">Programs</p>
+          {manageableGroupPrograms.map((program) => (
+            <button
+              key={program._id}
+              className={selectedManagedProgram?._id === program._id ? "rounded-2xl border border-accent-deep bg-white px-4 py-4 text-left" : "rounded-2xl border border-black/8 bg-white px-4 py-4 text-left"}
+              onClick={() => setSelectedManagedProgramId(program._id)}
+              type="button"
+            >
+              <p className="font-semibold text-accent-deep">{program.title}</p>
+              <p className="mt-1 text-sm text-muted">{program.subtitle ?? "Program"} · {program.days.join(" • ")} · {program.startTime}-{program.endTime}</p>
+            </button>
+          ))}
+        </div>
+
+        {selectedManagedProgram ? (
+          <div className="grid gap-4">
+            <div className="rounded-2xl border border-black/8 bg-white px-4 py-4">
+              <p className="text-xs uppercase tracking-[0.16em] text-muted">Program editor</p>
+              <h4 className="mt-2 text-lg font-semibold text-accent-deep">{selectedManagedProgram.title}</h4>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <label className="grid gap-2"><span className={fieldLabelClass}>Next class date</span><input className={formFieldClass} type="date" value={groupManagerDraft.classDate} onChange={(event) => setGroupManagerDraft((current) => ({ ...current, classDate: event.target.value }))} /></label>
+                <label className="grid gap-2"><span className={fieldLabelClass}>Bring note</span><input className={formFieldClass} value={groupManagerDraft.bringNote} onChange={(event) => setGroupManagerDraft((current) => ({ ...current, bringNote: event.target.value }))} /></label>
+                <label className="grid gap-2"><span className={fieldLabelClass}>Start time</span><input className={formFieldClass} type="time" value={groupManagerDraft.startTime} onChange={(event) => setGroupManagerDraft((current) => ({ ...current, startTime: event.target.value }))} /></label>
+                <label className="grid gap-2"><span className={fieldLabelClass}>End time</span><input className={formFieldClass} type="time" value={groupManagerDraft.endTime} onChange={(event) => setGroupManagerDraft((current) => ({ ...current, endTime: event.target.value }))} /></label>
+                <label className="grid gap-2"><span className={fieldLabelClass}>Event day title</span><input className={formFieldClass} value={groupManagerDraft.eventTitle} onChange={(event) => setGroupManagerDraft((current) => ({ ...current, eventTitle: event.target.value }))} /></label>
+                <label className="grid gap-2"><span className={fieldLabelClass}>Event day date</span><input className={formFieldClass} type="date" value={groupManagerDraft.eventDate} onChange={(event) => setGroupManagerDraft((current) => ({ ...current, eventDate: event.target.value }))} /></label>
+              </div>
+              <label className="mt-3 grid gap-2"><span className={fieldLabelClass}>Event day note</span><textarea className={formTextareaClass} value={groupManagerDraft.eventNote} onChange={(event) => setGroupManagerDraft((current) => ({ ...current, eventNote: event.target.value }))} /></label>
+              <div className="mt-3 grid gap-2">
+                <p className="text-xs uppercase tracking-[0.16em] text-muted">Assigned trainers</p>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {trainers.map((trainer) => {
+                    const checked = groupManagerDraft.assignedTrainerIds.includes(trainer._id);
+                    return (
+                      <label key={trainer._id} className="flex items-center gap-2 rounded-xl border border-black/8 bg-background px-3 py-2 text-sm text-accent-deep">
+                        <input checked={checked} onChange={() => setGroupManagerDraft((current) => ({
+                          ...current,
+                          assignedTrainerIds: checked ? current.assignedTrainerIds.filter((id) => id !== trainer._id) : [...current.assignedTrainerIds, trainer._id],
+                        }))} type="checkbox" />
+                        <span>{trainer.userId?.name ?? trainer.userId?.email ?? "Trainer"}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-3">
+                <button className={primaryButtonClass} onClick={handleSaveManagedProgramPlan} type="button">Save plan</button>
+                <button className={secondaryButtonClass} onClick={handleRefreshManagedProgramDashboard} type="button">Refresh dashboard</button>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-black/8 bg-white px-4 py-4">
+              <div className="flex items-center justify-between gap-3">
+                <p className="font-semibold text-accent-deep">Member roster</p>
+                <p className="text-xs uppercase tracking-[0.16em] text-muted">{selectedManagedProgramMembers.length} members</p>
+              </div>
+              <input className="mt-3 rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm outline-none" placeholder="Search members by name or email" value={groupManagerMemberSearch} onChange={(event) => setGroupManagerMemberSearch(event.target.value)} />
+              <div className="mt-3 flex flex-wrap gap-3">
+                <select className="rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm outline-none" value={groupManagerMemberId} onChange={(event) => setGroupManagerMemberId(event.target.value)}>
+                  <option value="">Select member to add</option>
+                  {groupManagerDirectoryUsers.filter((user) => !selectedManagedProgram.memberIds?.includes(user._id)).filter((user) => `${user.name} ${user.email}`.toLowerCase().includes(groupManagerMemberSearch.toLowerCase())).map((user) => <option key={user._id} value={user._id}>{user.name} · {user.email}</option>)}
+                </select>
+                <button className={secondaryButtonClass} onClick={handleAddManagedProgramMember} type="button">Add member</button>
+              </div>
+              <div className="mt-3 grid gap-2">
+                {selectedManagedProgramMembers.length > 0 ? selectedManagedProgramMembers.map((member) => (
+                  <div key={member._id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-black/8 bg-background px-3 py-3">
+                    <div>
+                      <p className="font-semibold text-accent-deep">{member.name}</p>
+                      <p className="text-sm text-muted">{member.email}</p>
+                    </div>
+                    <button className="rounded-full border border-rose-200 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-rose-700" onClick={() => handleRemoveManagedProgramMember(member._id)} type="button">Remove</button>
+                  </div>
+                )) : <div className={emptyStateClass}>No members enrolled yet.</div>}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-black/8 bg-white px-4 py-4">
+              <p className="font-semibold text-accent-deep">Attendance and mini dashboard</p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <select className="rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm outline-none" value={groupManagerAttendanceMemberId} onChange={(event) => setGroupManagerAttendanceMemberId(event.target.value)}>
+                  <option value="">Select member</option>
+                  {selectedManagedProgramMembers.map((member) => <option key={member._id} value={member._id}>{member.name}</option>)}
+                </select>
+                <input className="rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm outline-none" type="date" value={groupManagerAttendanceDate} onChange={(event) => setGroupManagerAttendanceDate(event.target.value)} />
+                <select className="rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm outline-none" value={groupManagerAttendanceStatus} onChange={(event) => setGroupManagerAttendanceStatus(event.target.value as "attended" | "missed" | "excused")}>
+                  <option value="attended">Attended</option>
+                  <option value="missed">Missed</option>
+                  <option value="excused">Excused</option>
+                </select>
+                <input className="rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm outline-none" placeholder="Attendance note" value={groupManagerAttendanceNote} onChange={(event) => setGroupManagerAttendanceNote(event.target.value)} />
+              </div>
+              <div className="mt-3 flex flex-wrap gap-3">
+                <button className={secondaryButtonClass} onClick={handleSubmitManagedAttendance} type="button">Save attendance</button>
+                <input className="rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm outline-none" type="date" value={groupManagerIntentDate} onChange={(event) => setGroupManagerIntentDate(event.target.value)} />
+                <button className={secondaryButtonClass} onClick={handleRefreshExpectedHeadcount} type="button">Refresh headcount</button>
+                <button className={secondaryButtonClass} onClick={handleRefreshManagedProgramDetails} type="button">Refresh attendance history</button>
+              </div>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <article className="rounded-2xl border border-black/8 bg-background px-4 py-4">
+                  <p className="text-xs uppercase tracking-[0.16em] text-muted">Expected next-day headcount</p>
+                  <p className="mt-2 text-xl font-semibold text-accent-deep">{selectedManagedProgramDashboard?.expectedHeadcount ?? selectedManagedProgram.expectedHeadcount ?? 0}</p>
+                </article>
+                <article className="rounded-2xl border border-black/8 bg-background px-4 py-4">
+                  <p className="text-xs uppercase tracking-[0.16em] text-muted">Best attended</p>
+                  <p className="mt-2 text-sm font-semibold text-accent-deep">{selectedManagedProgramDashboard?.topAttendance?.name ?? "No data"}</p>
+                  <p className="mt-1 text-sm text-muted">{selectedManagedProgramDashboard?.topAttendance?.rate ?? 0}% attendance</p>
+                </article>
+                <article className="rounded-2xl border border-black/8 bg-background px-4 py-4">
+                  <p className="text-xs uppercase tracking-[0.16em] text-muted">Biggest loser</p>
+                  <p className="mt-2 text-sm font-semibold text-accent-deep">{selectedManagedProgramDashboard?.biggestLoser?.name ?? "No data"}</p>
+                  <p className="mt-1 text-sm text-muted">{selectedManagedProgramDashboard?.biggestLoser?.weightLossKg ?? 0} kg lost</p>
+                </article>
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-black/8 bg-background px-4 py-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="font-semibold text-accent-deep">Attendance history</p>
+                  <p className="text-xs uppercase tracking-[0.16em] text-muted">{selectedManagedProgramDetails?.attendanceRows?.length ?? 0} rows</p>
+                </div>
+                <div className="mt-3 grid gap-2">
+                  {selectedManagedProgramDetails?.attendanceRows?.length ? selectedManagedProgramDetails.attendanceRows.slice(0, 12).map((row, index) => (
+                    <div key={`${row.userId}-${row.classDate}-${index}`} className="rounded-xl border border-black/8 bg-white px-3 py-3 text-sm">
+                      <p className="font-semibold text-accent-deep">{row.name}</p>
+                      <p className="mt-1 text-muted">{new Date(row.classDate).toLocaleDateString()} · {row.status}</p>
+                      {row.note ? <p className="mt-1 text-muted">{row.note}</p> : null}
+                    </div>
+                  )) : <p className="text-sm text-muted">No attendance history loaded yet. Use refresh above.</p>}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : <div className="rounded-2xl border border-dashed border-black/10 bg-white px-5 py-6 text-sm text-muted">
+          Create your first group program on the left to unlock the program editor, roster, attendance, and dashboard tools in trainer mode.
+        </div>}
+      </div>
+    </div>
+  ) : null;
+
   const manageSection = (
     <section className="rounded-[2rem] border border-black/5 bg-surface p-8 sm:p-10">
       <p className="text-sm uppercase tracking-[0.2em] text-muted">Workspace</p>
@@ -4486,6 +5103,7 @@ export function FithubWorkspace({ section }: { section: Section }) {
           productsCard={<div className="rounded-[1.5rem] bg-background p-5"><div><p className="font-semibold text-accent-deep">My products</p><p className="mt-1 text-sm text-muted">Keep your visible inventory current and tidy.</p></div><div className="mt-4 grid gap-3">{products.length > 0 ? products.map((product) => <article key={product._id} className="rounded-2xl border border-black/8 p-4"><p className="font-semibold text-accent-deep">{product.name}</p><p className="mt-1 text-sm text-muted">{product.currency} {product.price}</p><p className="mt-2 text-xs uppercase tracking-[0.18em] text-accent">{product.availability ? "available" : "hidden"}</p><div className="mt-3 flex flex-wrap gap-3"><button className="rounded-full border border-black/10 px-4 py-2 text-sm font-semibold text-accent-deep" type="button" onClick={() => handleEditProduct(product)}>Edit</button><button className="rounded-full border border-rose-200 px-4 py-2 text-sm font-semibold text-rose-700" type="button" onClick={() => handleDeleteProduct(product._id)}>Delete</button></div></article>) : <div className="rounded-2xl border border-dashed border-black/10 bg-white px-4 py-4 text-sm text-muted">No products yet for this shop. Add one product so your storefront does more than act as a venue profile.<div className="mt-4"><button className="rounded-full border border-black/10 px-4 py-2 text-sm font-semibold text-accent-deep transition-colors hover:border-accent hover:bg-accent" onClick={openShopProductModal} type="button">Add product</button></div></div>}</div></div>}
           venueOffersCard={<div className="rounded-[1.5rem] bg-background p-5"><div><p className="font-semibold text-accent-deep">Published venue offers</p><p className="mt-1 text-sm text-muted">Review memberships, day passes, classes, PT slots, and events currently attached to your venue.</p></div><div className="mt-4 grid gap-3">{ownedShopVenueServices.length > 0 ? ownedShopVenueServices.map((service) => <article key={service._id} className="rounded-2xl border border-black/8 p-4"><p className="font-semibold text-accent-deep">{service.title}</p><p className="mt-1 text-sm text-muted">{service.category} · {service.type} · {service.currency} {service.price}</p><p className="mt-1 text-sm text-muted">{service.schedule?.[0] ? `${service.schedule[0].day} ${service.schedule[0].startTime}-${service.schedule[0].endTime}` : "No slot published yet"}</p><div className="mt-2 flex flex-wrap gap-2">{getBookableDeliveryOptions(service).map((option) => <span key={`${service._id}-${option.mode}-${option.label}`} className={discoverChipClass}>{getDeliveryModeLabel(option.mode)}: {option.label}</span>)}</div><div className="mt-3 flex flex-wrap gap-3"><button className="rounded-full border border-black/10 px-4 py-2 text-sm font-semibold text-accent-deep" type="button" onClick={() => handleEditService(service)}>Edit</button><button className="rounded-full border border-rose-200 px-4 py-2 text-sm font-semibold text-rose-700" type="button" onClick={() => handleDeleteService(service._id)}>Delete</button></div></article>) : <div className="rounded-2xl border border-dashed border-black/10 bg-white px-4 py-4 text-sm text-muted">No venue offers yet for this shop. Publish a pass, membership, class, or event so members can actually request access.<div className="mt-4"><button className="rounded-full border border-black/10 px-4 py-2 text-sm font-semibold text-accent-deep transition-colors hover:border-accent hover:bg-accent" onClick={openVenueOfferModal} type="button">Publish venue offer</button></div></div>}</div></div>}
         /> : null}
+        {groupProgramManagementCard}
       </div></> : <><div className="mt-6 grid gap-4 lg:grid-cols-3"><article className="rounded-[1.5rem] border border-black/6 bg-background px-5 py-4"><p className="text-xs uppercase tracking-[0.18em] text-muted">Upcoming sessions</p><p className="mt-3 text-xl font-bold tracking-[-0.03em] text-accent-deep">{upcomingMemberBookings.length.toString().padStart(2, "0")}</p></article><article className="rounded-[1.5rem] border border-black/6 bg-background px-5 py-4"><p className="text-xs uppercase tracking-[0.18em] text-muted">Reschedule requests</p><p className="mt-3 text-xl font-bold tracking-[-0.03em] text-accent-deep">{memberAttendanceSummary.rescheduleRequests.toString().padStart(2, "0")}</p></article><article className="rounded-[1.5rem] border border-black/6 bg-background px-5 py-4"><p className="text-xs uppercase tracking-[0.18em] text-muted">Measurements logged</p><p className="mt-3 text-xl font-bold tracking-[-0.03em] text-accent-deep">{bodyMeasurements.length.toString().padStart(2, "0")}</p></article></div>{selectedMemberBooking ? <button className="mt-6 w-full rounded-[1.6rem] bg-accent-deep px-6 py-6 text-left text-surface shadow-[0_18px_44px_rgba(8,19,32,0.24)]" onClick={() => {
       setSelectedMemberBookingId(selectedMemberBooking._id);
       document.getElementById("member-bookings-details")?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -4512,10 +5130,49 @@ export function FithubWorkspace({ section }: { section: Section }) {
     ? landingSection
     : manageSection;
 
+  const groupFitnessRoleCard = discoverView === "group" && canManageGroupFitnessInDiscover
+    ? <section className="rounded-[2rem] border border-black/5 bg-surface p-8 sm:p-10">
+        <p className="text-sm uppercase tracking-[0.2em] text-muted">{showGroupFitnessOperatorMode ? "Group fitness operator mode" : "Group fitness member mode"}</p>
+        <h2 className="mt-3 text-3xl font-bold tracking-[-0.03em] text-accent-deep">{showGroupFitnessOperatorMode ? "Trainer and gym-owner management is active in this view" : "Participant mode is active in this view"}</h2>
+        <p className="mt-3 max-w-2xl text-sm leading-7 text-muted">{showGroupFitnessOperatorMode ? "Switch to member role if you want the participant activation and waitlist flow." : "Switch back to trainer or gym-owner mode to edit active programs, manage roster, and update next class plans."}</p>
+        {canToggleHomeRole ? <div className="mt-4 flex flex-wrap gap-2">
+          {hasTrainerAccess ? <button
+            className={`rounded-full border px-4 py-2 text-xs font-semibold uppercase tracking-[0.12em] ${homeRoleView === "trainer" ? "border-accent bg-accent text-accent-deep" : "border-black/10 bg-white text-accent-deep"}`}
+            onClick={() => setHomeRoleView("trainer")}
+            type="button"
+          >
+            Trainer
+          </button> : null}
+          {hasShopAccess ? <button
+            className={`rounded-full border px-4 py-2 text-xs font-semibold uppercase tracking-[0.12em] ${homeRoleView === "shop" ? "border-accent bg-accent text-accent-deep" : "border-black/10 bg-white text-accent-deep"}`}
+            onClick={() => setHomeRoleView("shop")}
+            type="button"
+          >
+            Gym owner
+          </button> : null}
+          <button
+            className={`rounded-full border px-4 py-2 text-xs font-semibold uppercase tracking-[0.12em] ${homeRoleView === "member" ? "border-accent bg-accent text-accent-deep" : "border-black/10 bg-white text-accent-deep"}`}
+            onClick={() => setHomeRoleView("member")}
+            type="button"
+          >
+            Member
+          </button>
+        </div> : null}
+        {showGroupFitnessOperatorMode ? <div className="mt-6">{groupProgramManagementCard}</div> : null}
+      </section>
+    : null;
+
+  const discoverContent = groupFitnessRoleCard
+    ? <>
+        {discoverSection}
+        {groupFitnessRoleCard}
+      </>
+    : discoverSection;
+
   const sections = {
     home: homeContent,
     auth: currentUser ? authSection : landingSection,
-    discover: discoverSection,
+    discover: discoverContent,
     manage: manageSection,
     admin: adminSection,
   };
@@ -4530,13 +5187,20 @@ export function FithubWorkspace({ section }: { section: Section }) {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">Role view on Home</p>
               <div className="flex gap-2">
-                <button
+                {hasTrainerAccess ? <button
                   className={`rounded-full border px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.12em] ${homeRoleView === "trainer" ? "border-accent bg-accent text-accent-deep" : "border-black/10 bg-white text-accent-deep"}`}
                   onClick={() => setHomeRoleView("trainer")}
                   type="button"
                 >
                   Trainer workspace
-                </button>
+                </button> : null}
+                {hasShopAccess ? <button
+                  className={`rounded-full border px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.12em] ${homeRoleView === "shop" ? "border-accent bg-accent text-accent-deep" : "border-black/10 bg-white text-accent-deep"}`}
+                  onClick={() => setHomeRoleView("shop")}
+                  type="button"
+                >
+                  Gym owner workspace
+                </button> : null}
                 <button
                   className={`rounded-full border px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.12em] ${homeRoleView === "member" ? "border-accent bg-accent text-accent-deep" : "border-black/10 bg-white text-accent-deep"}`}
                   onClick={() => setHomeRoleView("member")}
@@ -4572,6 +5236,8 @@ export function FithubWorkspace({ section }: { section: Section }) {
               <label className="grid gap-2"><span className={fieldLabelClass}>Full name</span><input className={formFieldClass} required minLength={2} value={registerForm.name} onChange={(event) => setRegisterForm((current) => ({ ...current, name: event.target.value }))} /></label>
               <label className="grid gap-2"><span className={fieldLabelClass}>Email</span><input className={formFieldClass} type="email" required value={registerForm.email} onChange={(event) => setRegisterForm((current) => ({ ...current, email: event.target.value }))} /></label>
               <label className="grid gap-2"><span className={fieldLabelClass}>Password</span><input className={formFieldClass} type="password" required minLength={8} value={registerForm.password} onChange={(event) => setRegisterForm((current) => ({ ...current, password: event.target.value }))} /></label>
+              <label className="grid gap-2"><span className={fieldLabelClass}>Sign up as</span><select className={formFieldClass} value={registerForm.role} onChange={(event) => setRegisterForm((current) => ({ ...current, role: event.target.value as RegisterFormState["role"] }))}><option value="member">Member</option><option value="trainer">Trainer</option><option value="gym_owner">Gym owner</option></select></label>
+              {registerForm.role === "gym_owner" ? <label className="grid gap-2 sm:col-span-2"><span className={fieldLabelClass}>Gym name</span><input className={formFieldClass} minLength={2} required value={registerForm.shopName} onChange={(event) => setRegisterForm((current) => ({ ...current, shopName: event.target.value }))} /></label> : null}
               <label className="grid gap-2"><span className={fieldLabelClass}>Phone</span><input className={formFieldClass} inputMode="tel" value={registerForm.phone} onChange={(event) => setRegisterForm((current) => ({ ...current, phone: event.target.value }))} /></label>
               <label className="grid gap-2 sm:col-span-2"><span className={fieldLabelClass}>Date of birth</span><input className={formFieldClass} type="date" required value={registerForm.dateOfBirth} onChange={(event) => setRegisterForm((current) => ({ ...current, dateOfBirth: event.target.value }))} /></label>
             </div>
