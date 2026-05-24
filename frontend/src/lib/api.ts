@@ -1,5 +1,7 @@
-export const apiBaseUrl =
-  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "http://localhost:5001/api";
+const configuredApiBaseUrl = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "";
+
+export const apiBaseUrl = configuredApiBaseUrl || (process.env.NODE_ENV === "development" ? "http://localhost:5001/api" : "");
+export const hasApiBaseUrl = Boolean(apiBaseUrl);
 
 export class ApiError extends Error {
   status: number;
@@ -18,6 +20,10 @@ type RequestOptions = {
 };
 
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  if (!apiBaseUrl) {
+    throw new ApiError("Frontend-only preview mode: API is not configured.", 503);
+  }
+
   const response = await fetch(`${apiBaseUrl}${path}`, {
     method: options.method ?? "GET",
     headers: {
